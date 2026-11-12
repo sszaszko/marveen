@@ -397,6 +397,51 @@ def _load_script_run_sends():
              "eszkozokon fut.")
 
 
+# LOCAL PATCH (owner decision 2026-11-09, Telegram 2422): scripts/gmail-vazlat.py only creates Gmail DRAFTS
+# (drafts().create, never messages().send), but it imports googleapiclient, so the script judge cannot prove it
+# draft-only and every run with --to was levelled as a send. The exemption is pinned to the script's SHA-256:
+# any edit of the script voids it (fail-closed), and the copy gate still checks the draft text. Only a single,
+# plain command qualifies: no shell operators, substitutions or redirections.
+_PINNED_DRAFT_WRITERS = {
+    os.path.normpath(os.path.join(_HERE, "..", "gmail-vazlat.py")):
+        "30a28adc2783f21257d1da9f780bfd038d987684e08c859467382fadddfd655a",
+    # Owner decision 2026-11-09 (Telegram 2446): draft-only delete (drafts().delete, never messages().delete/trash).
+    os.path.normpath(os.path.join(_HERE, "..", "gmail-vazlat-torles.py")):
+        "f1518858519c668dafa776d2cf184dc4baa51bf25c542742e570ee4dbe7c8460",
+}
+_PINNED_DRAFT_INTERPRETERS = re.compile(r"^(?:\S*/)?python3?(?:\.\d+)?$")
+_SHELL_META = re.compile(r"[;&|`$<>(){}\n\\]")
+
+
+def pinned_draft_writer_run(cmd: str, cwd) -> bool:
+    import shlex
+    if _SHELL_META.search(cmd):
+        return False
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not words:
+        return False
+    if _PINNED_DRAFT_INTERPRETERS.match(words[0]):
+        words = [w for w in words[1:] if w not in ("-I", "-S", "-u")]
+        if not words or words[0].startswith("-"):
+            return False
+    script = words[0]
+    if "=" in script:
+        return False
+    base = cwd if isinstance(cwd, str) and cwd else os.getcwd()
+    path = os.path.normpath(os.path.join(base, os.path.expanduser(script)))
+    pin = _PINNED_DRAFT_WRITERS.get(os.path.realpath(path)) or _PINNED_DRAFT_WRITERS.get(path)
+    if not pin or os.path.islink(path):
+        return False
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest() == pin
+    except OSError:
+        return False
+
+
 def draft_hint_note(cmd: str, cwd) -> str:
     """COPYGATEDRAFTFP1104 (Samu 69345): the fix to name when a python run with an address is a send only because the
     interpreter was not isolated (outgoing-copy-gate.draft_isolation_hint). A hint, never a decision: any failure
@@ -1266,6 +1311,8 @@ def main():
             sys.exit(0)
         if ledger_enabled():
             ledger_gate("bash", tool_input, cmd)
+        if pinned_draft_writer_run(cmd, payload.get("cwd")):
+            sys.exit(0)  # LOCAL: a pinned draft-only script puts nothing on the wire
     else:
         if not _MAYBE_MAIL_TOOL.search(tool):
             sys.exit(0)  # no mail kind is possible: the extractor is not needed

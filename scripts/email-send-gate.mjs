@@ -35,6 +35,7 @@ import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, re
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
 
 // HOOKDEPLOAD1008: the ledger module is a DYNAMIC import. As a static import, a
 // broken recipient-ledger.mjs (a syntax error, a conflicted merge, a missing
@@ -2008,6 +2009,87 @@ const MS365_DRAFT_SUFFIXES = ['create_draft_email', 'create_shared_mailbox_draft
   'create_shared_mailbox_reply_all_draft', 'create_shared_mailbox_forward_draft',
   'update_mail_message', 'update_shared_mailbox_message']
 
+// LOCAL PATCH (owner decision 2026-11-09, Telegram 2437): scripts/gmail-vazlat.py only creates Gmail DRAFTS
+// (drafts().create, never messages().send). It imports googleapiclient, so the script judge levels it as a send.
+// The exemption is pinned to the script's SHA-256 (any edit voids it, fail-closed) and to a single plain command:
+// no shell operators, substitutions, redirections or env prefixes. The copy gate still checks the draft text.
+const PINNED_DRAFT_WRITERS = new Map([
+  [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-vazlat.py')),
+    '30a28adc2783f21257d1da9f780bfd038d987684e08c859467382fadddfd655a'],
+  // Owner decision 2026-11-09 (Telegram 2446): draft-only delete (drafts().delete, never messages().delete/trash).
+  [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-vazlat-torles.py')),
+    'f1518858519c668dafa776d2cf184dc4baa51bf25c542742e570ee4dbe7c8460'],
+])
+const PINNED_DRAFT_INTERP = /^(?:\S*\/)?python3?(?:\.\d+)?$/
+const PINNED_SHELL_META = /[;&|`$<>(){}\n\\]/
+
+// The tokens of a single plain run of a script pinned in `pins` (script first, its arguments after), else null.
+function pinnedScriptRun(cmd, cwd, pins) {
+  if (typeof cmd !== 'string' || PINNED_SHELL_META.test(cmd)) return null
+  let words
+  try { words = segmentsTokens(cmd) } catch { return null }
+  if (!Array.isArray(words) || words.length !== 1 || !Array.isArray(words[0])) return null
+  let toks = words[0].slice()
+  if (!toks.length) return null
+  if (PINNED_DRAFT_INTERP.test(toks[0])) {
+    toks = toks.slice(1).filter((t) => t !== '-I' && t !== '-S' && t !== '-u')
+    if (!toks.length || toks[0].startsWith('-')) return null
+  }
+  const script = toks[0]
+  if (script.includes('=')) return null
+  const path = normalize(resolve(typeof cwd === 'string' && cwd ? cwd : process.cwd(), script))
+  let real
+  try {
+    if (lstatSync(path).isSymbolicLink()) return null
+    real = realpathSync(path)
+  } catch { return null }
+  const pin = pins.get(real) ?? pins.get(path)
+  if (!pin) return null
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex') === pin ? toks : null
+  } catch { return null }
+}
+
+export function pinnedDraftWriterRun(cmd, cwd = process.cwd()) {
+  return pinnedScriptRun(cmd, cwd, PINNED_DRAFT_WRITERS) !== null
+}
+
+// LOCAL PATCH (owner decision 2026-11-09, Telegram 2455, "B"): by default an agent writes a DRAFT; a mail may go out
+// when a skill fixes that this kind of letter is sent, or the owner asked for the send in so many words. That rule is
+// held by the persona/skill text; this gate's part is: at email_send level 3 (store/autonomy-config.json, capped by
+// maxLevel, read like email-approval-gate.py read_email_level) it no longer refuses a sub-agent's send, but only
+//   - the pinned draft sender scripts/gmail-kuldes.py (drafts().send of an EXISTING draft), run as one plain command
+//     WITH --cimzett-ledger: this gate cannot see the draft's recipients, so the pinned script measures every To/Cc/Bcc
+//     against the recipient ledger itself, and runs sender_check (copy gate content checks, level) on the real text;
+//   - an MCP send_email / manage_email send whose every recipient is in the ledger.
+// Reply / forward / send_draft by id (recipients this gate cannot see) stay refused at every level.
+const PINNED_SENDERS = new Map([
+  [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-kuldes.py')),
+    'b7e434940d2825542c139fba4950a7a37b96ec52808cb19f615ea1ed610a68b2'],
+])
+const PINNED_SENDER_LEDGER_FLAG = '--cimzett-ledger'
+
+export function pinnedSenderRun(cmd, cwd = process.cwd()) {
+  const toks = pinnedScriptRun(cmd, cwd, PINNED_SENDERS)
+  return toks !== null && toks.slice(1).includes(PINNED_SENDER_LEDGER_FLAG)
+}
+
+// The email_send level, as the main agent's gate reads it: min(level, maxLevel), clamped to 1..3; a missing category
+// or an unreadable file is 2 (fail-closed: for a sub-agent, 2 refuses like 1).
+export function emailSendLevel(readFile = (p) => readFileSync(p, 'utf-8')) {
+  try {
+    const cfg = JSON.parse(readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'autonomy-config.json')))
+    for (const cat of cfg?.categories ?? []) {
+      if (cat?.key !== 'email_send') continue
+      let level = Number.parseInt(cat.level, 10)
+      if (!Number.isInteger(level)) return 2
+      if (Number.isInteger(cat.maxLevel)) level = Math.min(level, cat.maxLevel)
+      return Math.max(1, Math.min(3, level))
+    }
+    return 2
+  } catch { return 2 }
+}
+
 export function classifyMailTool(toolName) {
   const n = String(toolName ?? '').toLowerCase().replaceAll('-', '_')
   if (!n || n === 'bash') return null
@@ -2273,8 +2355,9 @@ function ledgerLookup() {
 // (the only path the thread-reply capability below can narrow),
 // 'unverified-recipient' is a draft/manage_email address with no recorded
 // source, and everything else is the sub-agent governance block.
-export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd()) {
+export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd(), level = null) {
   const name = String(toolName ?? '')
+  const sendLevel = () => (level ??= emailSendLevel())
   // Lazy: only build the ledger lookup when a call actually carries addresses,
   // so a read-shaped tool call never pays a file read.
   const verify = isVerified ?? (() => {
@@ -2292,7 +2375,18 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   // guards the paths where an address can be typed from memory: drafting and
   // manage_email.
   const mailKind = classifyMailTool(name)
-  if (mailKind === 'send_email') return { deny: true, kind: 'send_email' }
+  if (mailKind === 'send_email') {
+    // LOCAL (B, TG 2455): at level 3 a send whose every recipient is in the ledger goes.
+    if (sendLevel() >= 3) {
+      const unparseable = unparseableRecipients(toolInput)
+      if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
+      const bad = unverifiedRecipients(toolInput, verify)
+      if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
+      if (!RECIPIENT_FIELDS.some((f) => toolInput?.[f])) return { deny: true, kind: 'send_email' }
+      return { deny: false }
+    }
+    return { deny: true, kind: 'send_email' }
+  }
   // The claude.ai Gmail connector (mcp__claude_ai_Gmail__*) has no send_email:
   // its sends are send_message / reply / forward. Drafts stay allowed and the
   // reads are not sends, only the three send-shaped tools are denied
@@ -2357,10 +2451,15 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
     // force a draft when attachments are present.
     const draft = toolInput?.draft
     if (draft === true || draft === 'true') return { deny: false }
+    // LOCAL (B, TG 2455): at level 3 a ledger-checked send goes. A reply/forward that names no recipient of its
+    // own is addressed by the thread, which this gate cannot see: it stays refused.
+    if (sendLevel() >= 3 && RECIPIENT_FIELDS.some((f) => toolInput?.[f])) return { deny: false }
     return { deny: true, kind: 'draft-required' }
   }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
+    if (pinnedDraftWriterRun(cmd, cwd)) return { deny: false } // LOCAL: pinned draft-only script, nothing on the wire
+    if (pinnedSenderRun(cmd, cwd) && sendLevel() >= 3) return { deny: false } // LOCAL (B): pinned sender, ledger in the script
     if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
     if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
   }
