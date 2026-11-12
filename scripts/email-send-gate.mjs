@@ -31,10 +31,11 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
+import { closeSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
+import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
 
 // HOOKDEPLOAD1008: the ledger module is a DYNAMIC import. As a static import, a
 // broken recipient-ledger.mjs (a syntax error, a conflicted merge, a missing
@@ -2008,6 +2009,166 @@ const MS365_DRAFT_SUFFIXES = ['create_draft_email', 'create_shared_mailbox_draft
   'create_shared_mailbox_reply_all_draft', 'create_shared_mailbox_forward_draft',
   'update_mail_message', 'update_shared_mailbox_message']
 
+// LOCAL PATCH (owner decision 2026-11-09, Telegram 2437): scripts/gmail-vazlat.py only creates Gmail DRAFTS
+// (drafts().create, never messages().send). It imports googleapiclient, so the script judge levels it as a send.
+// The exemption is pinned to the script's SHA-256 (any edit voids it, fail-closed) and to a single plain command:
+// no shell operators, substitutions, redirections or env prefixes. The copy gate still checks the draft text.
+const PINNED_DRAFT_WRITERS = new Map([
+  [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-vazlat.py')),
+    '30a28adc2783f21257d1da9f780bfd038d987684e08c859467382fadddfd655a'],
+  // Owner decision 2026-11-09 (Telegram 2446): draft-only delete (drafts().delete, never messages().delete/trash).
+  [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-vazlat-torles.py')),
+    'f1518858519c668dafa776d2cf184dc4baa51bf25c542742e570ee4dbe7c8460'],
+])
+const PINNED_DRAFT_INTERP = /^(?:\S*\/)?python3?(?:\.\d+)?$/
+const PINNED_SHELL_META = /[;&|`$<>(){}\n\\]/
+
+// The tokens of a single plain run of a script pinned in `pins` (script first, its arguments after), else null.
+function pinnedScriptRun(cmd, cwd, pins) {
+  if (typeof cmd !== 'string' || PINNED_SHELL_META.test(cmd)) return null
+  let words
+  try { words = segmentsTokens(cmd) } catch { return null }
+  if (!Array.isArray(words) || words.length !== 1 || !Array.isArray(words[0])) return null
+  let toks = words[0].slice()
+  if (!toks.length) return null
+  if (PINNED_DRAFT_INTERP.test(toks[0])) {
+    toks = toks.slice(1).filter((t) => t !== '-I' && t !== '-S' && t !== '-u')
+    if (!toks.length || toks[0].startsWith('-')) return null
+  }
+  const script = toks[0]
+  if (script.includes('=')) return null
+  const path = normalize(resolve(typeof cwd === 'string' && cwd ? cwd : process.cwd(), script))
+  let real
+  try {
+    if (lstatSync(path).isSymbolicLink()) return null
+    real = realpathSync(path)
+  } catch { return null }
+  const pin = pins.get(real) ?? pins.get(path)
+  if (!pin) return null
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex') === pin ? toks : null
+  } catch { return null }
+}
+
+export function pinnedDraftWriterRun(cmd, cwd = process.cwd()) {
+  return pinnedScriptRun(cmd, cwd, PINNED_DRAFT_WRITERS) !== null
+}
+
+// LOCAL PATCH (owner decision 2026-11-09, Telegram 2455, "B"): by default an agent writes a DRAFT; a mail may go out
+// when a skill fixes that this kind of letter is sent, or the owner asked for the send in so many words. That rule is
+// held by the persona/skill text; this gate's part is: at email_send level 3 (store/autonomy-config.json, capped by
+// maxLevel, read like email-approval-gate.py read_email_level) it no longer refuses a sub-agent's send, but only
+//   - the pinned draft sender scripts/gmail-kuldes.py (drafts().send of an EXISTING draft), run as one plain command
+//     WITH --cimzett-ledger: this gate cannot see the draft's recipients, so the pinned script measures every To/Cc/Bcc
+//     against the recipient ledger itself, and runs sender_check (copy gate content checks, level) on the real text.
+//     Since TG 2555 (2026-11-12) only for an agent that holds the --fiok account (SEND_ACCOUNTS below).
+// The MCP send_email / manage_email send this patch first opened at level 3 is closed again (TG 2555): it names no
+// account. Reply / forward / send_draft by id (recipients this gate cannot see) stay refused at every level.
+const PINNED_SENDERS = new Map([
+  [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-kuldes.py')),
+    'b7e434940d2825542c139fba4950a7a37b96ec52808cb19f615ea1ed610a68b2'],
+])
+const PINNED_SENDER_LEDGER_FLAG = '--cimzett-ledger'
+
+export function pinnedSenderRun(cmd, cwd = process.cwd(), pins = PINNED_SENDERS) {
+  return pinnedSenderTokens(cmd, cwd, pins) !== null
+}
+
+// The pinned sender's words (script first) when cmd is a pinned, ledger-flagged sender run, else null.
+export function pinnedSenderTokens(cmd, cwd = process.cwd(), pins = PINNED_SENDERS) {
+  const toks = pinnedScriptRun(cmd, cwd, pins)
+  return toks !== null && toks.slice(1).includes(PINNED_SENDER_LEDGER_FLAG) ? toks : null
+}
+
+// LOCAL PATCH (owner decision 2026-11-12, Telegram 2555): the send right is PER AGENT AND PER ACCOUNT. Before this,
+// the level-3 opening above let every sub-agent send from every account, and the per-account rule lived only in a
+// skill (level-kuldes-ugynokkent), i.e. in text. Now:
+//   - ops-finance: szaszko and procurement; zara: info (the table below);
+//   - every other sub-agent (coder, iris, any new agent): no send at all, drafting stays open;
+//   - the main agent may send from any account, but this gate never runs in its session (the scaffold wires it
+//     into sub-agents only), so its path is untouched.
+// The table lives HERE, in a hook file no agent may write, on purpose: a store/ file would be one an agent could
+// edit to grant itself an account.
+export const SEND_ACCOUNTS = Object.freeze({
+  'ops-finance': Object.freeze(['procurement', 'szaszko']),
+  zara: Object.freeze(['info']),
+})
+
+// Which account a pinned gmail-kuldes.py run sends from, or null when that cannot be read with certainty. The script
+// parses with argparse, which also accepts an abbreviation (--f, --fi, --fio) and lets a repeated option win last,
+// so anything but exactly ONE `--fiok <name>` / `--fiok=<name>` is unreadable here (fail-closed).
+export function senderAccount(toks) {
+  if (!Array.isArray(toks)) return null
+  let account = null
+  let seen = 0
+  for (let i = 1; i < toks.length; i++) {
+    const t = String(toks[i])
+    if (t === '--') return null
+    if (!t.startsWith('--f')) continue
+    seen++
+    if (t === '--fiok') account = toks[++i] ?? null
+    else if (t.startsWith('--fiok=')) account = t.slice('--fiok='.length)
+    else return null
+  }
+  return seen === 1 && typeof account === 'string' && /^[a-z][a-z0-9_-]*$/.test(account) ? account : null
+}
+
+// The calling sub-agent, read from where the agent cannot move it within a session: the payload's transcript_path
+// lives in the agent's own config dir (<install>/agents/<name>/.claude-config/...), fixed by the launcher's
+// CLAUDE_CONFIG_DIR. The shell cwd is NOT used: a `cd agents/ops-finance` would otherwise grant ops-finance's
+// accounts. The payload path is compared unresolved (agents/<name>/.claude-config/projects may itself be a symlink),
+// against the install dir as reached and as resolved. When the hook's own CLAUDE_CONFIG_DIR names a different agent,
+// the identity is contradictory and nothing is granted. Unknown -> null (draft only).
+export function callerAgent(payload, {
+  root = dirname(dirname(fileURLToPath(import.meta.url))),
+  env = process.env,
+  isAgentDir = (p) => { try { return statSync(p).isDirectory() } catch { return false } },
+} = {}) {
+  const fromPath = (p) => {
+    if (typeof p !== 'string' || !p.trim()) return null
+    const abs = normalize(resolve(p.trim()))
+    let realRoot = root
+    try { realRoot = realpathSync(root) } catch { /* root as reached */ }
+    for (const r of new Set([normalize(root), normalize(realRoot)])) {
+      const agentsRoot = join(r, 'agents') + sep
+      if (!abs.startsWith(agentsRoot)) continue
+      const name = abs.slice(agentsRoot.length).split(sep)[0]
+      if (AGENT_NAME.test(name) && isAgentDir(join(r, 'agents', name))) return name
+      return null
+    }
+    return null
+  }
+  const agent = fromPath(payload?.transcript_path)
+  if (!agent) return null
+  const cfg = typeof env?.CLAUDE_CONFIG_DIR === 'string' ? env.CLAUDE_CONFIG_DIR.trim() : ''
+  if (cfg) {
+    const cfgAgent = fromPath(join(cfg, 'x'))
+    if (cfgAgent !== agent) return null
+  }
+  return agent
+}
+
+export function sendAccountAllowed(agent, account) {
+  if (!agent || !account || !Object.hasOwn(SEND_ACCOUNTS, agent)) return false
+  return SEND_ACCOUNTS[agent].includes(account)
+}
+
+// The email_send level, as the main agent's gate reads it: min(level, maxLevel), clamped to 1..3; a missing category
+// or an unreadable file is 2 (fail-closed: for a sub-agent, 2 refuses like 1).
+export function emailSendLevel(readFile = (p) => readFileSync(p, 'utf-8')) {
+  try {
+    const cfg = JSON.parse(readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'autonomy-config.json')))
+    for (const cat of cfg?.categories ?? []) {
+      if (cat?.key !== 'email_send') continue
+      let level = Number.parseInt(cat.level, 10)
+      if (!Number.isInteger(level)) return 2
+      if (Number.isInteger(cat.maxLevel)) level = Math.min(level, cat.maxLevel)
+      return Math.max(1, Math.min(3, level))
+    }
+    return 2
+  } catch { return 2 }
+}
+
 export function classifyMailTool(toolName) {
   const n = String(toolName ?? '').toLowerCase().replaceAll('-', '_')
   if (!n || n === 'bash') return null
@@ -2273,8 +2434,10 @@ function ledgerLookup() {
 // (the only path the thread-reply capability below can narrow),
 // 'unverified-recipient' is a draft/manage_email address with no recorded
 // source, and everything else is the sub-agent governance block.
-export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd()) {
+export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd(), level = null,
+  caller = null, senderPins = PINNED_SENDERS) {
   const name = String(toolName ?? '')
+  const sendLevel = () => (level ??= emailSendLevel())
   // Lazy: only build the ledger lookup when a call actually carries addresses,
   // so a read-shaped tool call never pays a file read.
   const verify = isVerified ?? (() => {
@@ -2292,7 +2455,12 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   // guards the paths where an address can be typed from memory: drafting and
   // manage_email.
   const mailKind = classifyMailTool(name)
-  if (mailKind === 'send_email') return { deny: true, kind: 'send_email' }
+  if (mailKind === 'send_email') {
+    // LOCAL (TG 2555, replaces the level-3 opening of TG 2455 here): an MCP send names no account this gate can read,
+    // and the send right is per account, so it is refused like below level 3. The pinned gmail-kuldes.py (--fiok) is
+    // the send path. The thread-reply capability narrowing at the entrypoint is unchanged.
+    return { deny: true, kind: 'send_email' }
+  }
   // The claude.ai Gmail connector (mcp__claude_ai_Gmail__*) has no send_email:
   // its sends are send_message / reply / forward. Drafts stay allowed and the
   // reads are not sends, only the three send-shaped tools are denied
@@ -2357,10 +2525,20 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
     // force a draft when attachments are present.
     const draft = toolInput?.draft
     if (draft === true || draft === 'true') return { deny: false }
+    // LOCAL (TG 2555): the level-3 opening of TG 2455 is withdrawn here too: manage_email names no account this gate
+    // can read, and the send right is per account. Draft, then the pinned gmail-kuldes.py.
     return { deny: true, kind: 'draft-required' }
   }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
+    if (pinnedDraftWriterRun(cmd, cwd)) return { deny: false } // LOCAL: pinned draft-only script, nothing on the wire
+    // LOCAL (B, TG 2455 + TG 2555): pinned sender, ledger in the script, and only from an account the caller holds.
+    const senderToks = pinnedSenderTokens(cmd, cwd, senderPins)
+    if (senderToks && sendLevel() >= 3) {
+      const account = senderAccount(senderToks)
+      if (sendAccountAllowed(caller, account)) return { deny: false }
+      return { deny: true, kind: 'send-account', agent: caller, account }
+    }
     if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
     if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
   }
@@ -2422,6 +2600,20 @@ export function buildLedgerUnavailableMsg(err) {
     'EMAIL-KAPU: TILTVA. A kapu fuggosege (scripts/recipient-ledger.mjs) nem toltheto be ' +
     `(${err?.message ?? err}) -- fail-closed: a cimzett nem ellenorizheto, ezert a hivas nem mehet at. ` +
     'A modult a fo ugynok javitja (ez a kapu az o munkameneteben nem fut): jelezd neki.\n'
+  )
+}
+
+// LOCAL (TG 2555): the deny for a pinned send from an account the caller does not hold (or an unknown caller, or an
+// unreadable --fiok). The draft is not lost: the way on is the draft id to the main agent, who may send from any.
+export function buildSendAccountMsg(botName, agent, account) {
+  const grants = Object.entries(SEND_ACCOUNTS).map(([a, accs]) => `${a}: ${accs.join(', ')}`).join('; ')
+  const who = agent ? `ugynok: ${agent}` : 'a hivo ugynok nem azonosithato (fail-closed)'
+  const what = account ? `fiok: ${account}` : 'a --fiok nem olvashato egyertelmuen (pontosan egy --fiok <nev> kell)'
+  return (
+    `EMAIL-KAPU: ebbol a fiokbol neked nincs kuldesi jogod (${who}; ${what}). ` +
+    `Kuldesi jog fiokonkent (gazda-dontes 2026-11-12): ${grants}; a fo ugynok barmelyik fiokbol. ` +
+    'Mindenki mas csak vazlatot ir. A vazlat megmarad: a fiokot es a DRAFT_ID-t kuldd ' +
+    `${botName}nek inter-agent uzenetben, o kuldi ki.`
   )
 }
 
@@ -2647,7 +2839,8 @@ if (isInvokedDirectly()) {
   }
   let decision
   try {
-    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd())
+    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd(), null,
+      callerAgent(payload))
   } catch (err) {
     // HOOKDEPLOAD1008: the call needed the ledger, and the ledger module did
     // not load. Anything else that throws here is not this branch's to judge.
@@ -2655,7 +2848,7 @@ if (isInvokedDirectly()) {
     process.stderr.write(buildLedgerUnavailableMsg(LEDGER_LOAD_ERROR))
     process.exit(2)
   }
-  const { deny: shouldDeny, kind, addresses } = decision
+  const { deny: shouldDeny, kind, addresses, agent, account } = decision
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
     // An address with no recorded source loses before every other branch,
@@ -2666,6 +2859,7 @@ if (isInvokedDirectly()) {
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
     if (kind === 'script-send') deny(buildScriptSendMsg(botName, ownerName))
+    if (kind === 'send-account') deny(buildSendAccountMsg(botName, agent, account))
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
     // and only for the direct send_email tool. Bash send routes and
