@@ -2021,11 +2021,37 @@ const PINNED_DRAFT_WRITERS = new Map([
     'f1518858519c668dafa776d2cf184dc4baa51bf25c542742e570ee4dbe7c8460'],
 ])
 const PINNED_DRAFT_INTERP = /^(?:\S*\/)?python3?(?:\.\d+)?$/
-const PINNED_SHELL_META = /[;&|`$<>(){}\n\\]/
+// Shell syntax that makes a pinned run something other than ONE plain command with literal words. Read with the quote
+// state, as bash reads it (marveen 5505, ops-finance 5504, 2026-11-12): a draft subject "Ajanlat (Q3 2026)" is a
+// literal word, but the raw-string test refused it, and the script judge then read the draft writer as a sender.
+//   - outside quotes: ; & | ` $ < > ( ) { } \ and # (a comment drops the rest of the line: the gate would read a
+//     `# --cimzett-ledger` as the ledger flag while bash never passes it, so the sender skipped the ledger check),
+//     and the glob characters * ? [ (a glob can expand into a file named `--fiok=info`, a word this gate never
+//     saw; argparse takes the last --fiok, so the account check would read the wrong one);
+//   - inside double quotes: $ ` \ stay active in bash (substitution, escape), so they still refuse;
+//   - inside single quotes: nothing is active;
+//   - a newline anywhere, or an unclosed quote, refuses (fail-closed).
+const PINNED_SHELL_META_UNQUOTED = ';&|`$<>(){}\\#*?['
+const PINNED_SHELL_META_DQUOTED = '$`\\'
+export function pinnedShellMeta(cmd) {
+  let q = null
+  for (const ch of cmd) {
+    if (ch === '\n' || ch === '\r') return true
+    if (q === "'") { if (ch === "'") q = null; continue }
+    if (q === '"') {
+      if (ch === '"') q = null
+      else if (PINNED_SHELL_META_DQUOTED.includes(ch)) return true
+      continue
+    }
+    if (ch === "'" || ch === '"') { q = ch; continue }
+    if (PINNED_SHELL_META_UNQUOTED.includes(ch)) return true
+  }
+  return q !== null
+}
 
 // The tokens of a single plain run of a script pinned in `pins` (script first, its arguments after), else null.
 function pinnedScriptRun(cmd, cwd, pins) {
-  if (typeof cmd !== 'string' || PINNED_SHELL_META.test(cmd)) return null
+  if (typeof cmd !== 'string' || pinnedShellMeta(cmd)) return null
   let words
   try { words = segmentsTokens(cmd) } catch { return null }
   if (!Array.isArray(words) || words.length !== 1 || !Array.isArray(words[0])) return null
