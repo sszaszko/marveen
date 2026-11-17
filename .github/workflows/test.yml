@@ -165,6 +165,9 @@ jobs:
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # TGENVMISSING1117: a TELEGRAM_ENV naming a missing file (a pre-#915 unit) no longer silences the host
+      # watchdog, the OnFailure notifier or the memory gate. Hermetic: throwaway install, curl stub on PATH.
+      - run: bash scripts/__tests__/telegram-env-missing-fallback.test.sh
       # NATIVEAUTOUPD1642 (#1642): the channels.sh install/update block on native
       # hosts -- never npm, and the guarded daily `claude update` with rollback.
       # The older native-guard suite had no CI wiring either. Both hermetic: the

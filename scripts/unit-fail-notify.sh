@@ -21,6 +21,12 @@ if [ -z "$TG_CHAN_DIR" ]; then
   [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
 fi
 ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
+# A TELEGRAM_ENV naming a missing file (a pre-#915 unit, see host-restart-watchdog.sh) would silence the notice:
+# fall back to this script's own resolution, and say so.
+if [ -n "${TELEGRAM_ENV:-}" ] && [ ! -f "$TELEGRAM_ENV" ] && [ -f "$TG_CHAN_DIR/.env" ]; then
+  echo "[unit-fail-notify] TELEGRAM_ENV=$TELEGRAM_ENV does not exist; using $TG_CHAN_DIR/.env instead" >&2
+  ENV_FILE="$TG_CHAN_DIR/.env"
+fi
 # Alert target chat-id -- MUST be provided by the install's own config; there is
 # deliberately NO hardcoded fallback (a hardcoded id would make every downstream
 # install send its alerts to that one private chat via its own bot token).

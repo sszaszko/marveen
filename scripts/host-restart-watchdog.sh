@@ -31,6 +31,14 @@ if [ -z "$TG_CHAN_DIR" ]; then
   [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
 fi
 ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
+# An explicit TELEGRAM_ENV that names a file that is not there silences every alert: a unit rendered before the #915
+# migration still points at the emptied legacy dir, and update.sh only strips that line on its own run
+# (UPDUNITTGENV930), so a host that skipped it stays mute (measured on a live install: five restarts unreported).
+# Fall back to this script's own resolution, and say so.
+if [ -n "${TELEGRAM_ENV:-}" ] && [ ! -f "$TELEGRAM_ENV" ] && [ -f "$TG_CHAN_DIR/.env" ]; then
+  echo "[host-restart-watchdog] TELEGRAM_ENV=$TELEGRAM_ENV does not exist; using $TG_CHAN_DIR/.env instead" >&2
+  ENV_FILE="$TG_CHAN_DIR/.env"
+fi
 # Alert target chat-id -- MUST come from the install's own config; there is
 # deliberately NO hardcoded fallback (a hardcoded id would make every downstream
 # install send its host-stability alerts to that one private chat).

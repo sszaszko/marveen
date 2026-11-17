@@ -93,6 +93,12 @@ if [ -z "$TG_CHAN_DIR" ]; then
   [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
 fi
 ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
+# A TELEGRAM_ENV naming a missing file (a pre-#915 unit, see host-restart-watchdog.sh) would silence the alert:
+# fall back to this script's own resolution, and say so.
+if [ -n "${TELEGRAM_ENV:-}" ] && [ ! -f "$TELEGRAM_ENV" ] && [ -f "$TG_CHAN_DIR/.env" ]; then
+  echo "[fleet-memory-gate] TELEGRAM_ENV=$TELEGRAM_ENV does not exist; using $TG_CHAN_DIR/.env instead" >&2
+  ENV_FILE="$TG_CHAN_DIR/.env"
+fi
 # Alert target: the owner's chat id. Resolve from the channel access.json (the
 # first allow-listed sender) so no chat-id is ever hardcoded; override with
 # MARVEEN_ALERT_CHAT_ID. Empty -> the Telegram alert is skipped (log only), never
