@@ -776,6 +776,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    // Quota-gate tiers (src/quota-gate.ts). 0 keeps the gate exactly as it was.
+    key: 'QUOTA_GATE_HARD_AT_PERCENT',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 100,
+    description: 'A kvóta-kapu kemény határa (%). 0 = ki: 85%-tól minden háttér-heartbeat áll, mint eddig. Beállítva (pl. 95): 85% és e határ között csak az essential: true jelölésű heartbeatek futnak, a határon és fölötte egy sem. 85 vagy annál kisebb érték mindenkire lejjebb hozza a vonalat (az essential sem fut). A task és command feladatokat nem érinti.',
+    module: 'heartbeat',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'HEARTBEAT_AGENT_ENABLED',
     type: 'string',
     // OFF by default, matching config.ts: an unset key resolves to false there
@@ -889,7 +901,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'SKILL_QUARANTINE',
     type: 'boolean',
     default: '1',
-    description: 'Skill-karantén. Bekapcsolva (alapértelmezés) minden új vagy javított skill (javaslat, generálás, import) a gazda jóváhagyásáig karanténban vár. Kikapcsolva azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni, az nem élesedik, hanem jóváhagyásra vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
+    description: 'Skill-karantén. Bekapcsolva (alapértelmezés) minden új vagy javított skill (javaslat, generálás, import) a gazda jóváhagyásáig karanténban vár. Kikapcsolva azonnal élesedik; a scan, a hash-kötés és az auditsor ilyenkor is lefut, és ha a scan nem tudja a skillt teljesen megmutatni (például mert a találati lista elérte a felső korlátját), vagy erős mintát talál benne (hamisított címke vagy fejléc, utasítás-felülírás, láthatatlan Unicode, letöltött kód futtatása, hosszú kódolt blob), az nem élesedik, hanem jóváhagyásra vár. Kikapcsolni (lazítás) csak a dashboard-belépéssel lehet.',
     module: 'audit',
     secret: false,
     requiresRestart: false,
