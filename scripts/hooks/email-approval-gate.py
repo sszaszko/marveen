@@ -403,8 +403,9 @@ def _load_script_run_sends():
 # any edit of the script voids it (fail-closed), and the copy gate still checks the draft text. Only a single,
 # plain command qualifies: no shell operators, substitutions or redirections.
 _PINNED_DRAFT_WRITERS = {
+    # Re-pinned 2026-11-23 (Telegram 2961 A1 / 2963): the script refuses a draft whose body starts with an OK mark.
     os.path.normpath(os.path.join(_HERE, "..", "gmail-vazlat.py")):
-        "30a28adc2783f21257d1da9f780bfd038d987684e08c859467382fadddfd655a",
+        "0957162d0be00dbb99f1c9fbc333af456bd9d15e191ebbae1bb9540b0089a1e1",
     # Owner decision 2026-11-09 (Telegram 2446): draft-only delete (drafts().delete, never messages().delete/trash).
     os.path.normpath(os.path.join(_HERE, "..", "gmail-vazlat-torles.py")):
         "f1518858519c668dafa776d2cf184dc4baa51bf25c542742e570ee4dbe7c8460",

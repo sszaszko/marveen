@@ -2014,8 +2014,10 @@ const MS365_DRAFT_SUFFIXES = ['create_draft_email', 'create_shared_mailbox_draft
 // The exemption is pinned to the script's SHA-256 (any edit voids it, fail-closed) and to a single plain command:
 // no shell operators, substitutions, redirections or env prefixes. The copy gate still checks the draft text.
 const PINNED_DRAFT_WRITERS = new Map([
+  // Re-pinned 2026-11-23 (Telegram 2961 A1 / 2963): the script now refuses, before any Gmail call, a draft whose
+  // body starts with an OK mark (the OK-auto-sender reads that as the owner's approval; an agent must not write it).
   [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-vazlat.py')),
-    '30a28adc2783f21257d1da9f780bfd038d987684e08c859467382fadddfd655a'],
+    '0957162d0be00dbb99f1c9fbc333af456bd9d15e191ebbae1bb9540b0089a1e1'],
   // Owner decision 2026-11-09 (Telegram 2446): draft-only delete (drafts().delete, never messages().delete/trash).
   [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-vazlat-torles.py')),
     'f1518858519c668dafa776d2cf184dc4baa51bf25c542742e570ee4dbe7c8460'],
