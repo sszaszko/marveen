@@ -2110,6 +2110,8 @@ export function pinnedSenderTokens(cmd, cwd = process.cwd(), pins = PINNED_SENDE
 // the level-3 opening above let every sub-agent send from every account, and the per-account rule lived only in a
 // skill (level-kuldes-ugynokkent), i.e. in text. Now:
 //   - ops-finance: szaszko and procurement; zara: info (the table below);
+//   - expert: info (owner decision 2026-11-23, Telegram 2947; the right is technical only, a send still needs the
+//     owner's instruction for that letter, which the expert's CLAUDE.md states);
 //   - every other sub-agent (coder, iris, any new agent): no send at all, drafting stays open;
 //   - the main agent may send from any account, but this gate never runs in its session (the scaffold wires it
 //     into sub-agents only), so its path is untouched.
@@ -2118,6 +2120,7 @@ export function pinnedSenderTokens(cmd, cwd = process.cwd(), pins = PINNED_SENDE
 export const SEND_ACCOUNTS = Object.freeze({
   'ops-finance': Object.freeze(['procurement', 'szaszko']),
   zara: Object.freeze(['info']),
+  expert: Object.freeze(['info']),
 })
 
 // Which account a pinned gmail-kuldes.py run sends from, or null when that cannot be read with certainty. The script
