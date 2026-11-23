@@ -2019,6 +2019,11 @@ const PINNED_DRAFT_WRITERS = new Map([
   // Owner decision 2026-11-09 (Telegram 2446): draft-only delete (drafts().delete, never messages().delete/trash).
   [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-vazlat-torles.py')),
     'f1518858519c668dafa776d2cf184dc4baa51bf25c542742e570ee4dbe7c8460'],
+  // Owner decision 2026-11-23 (Telegram 2951): a forward DRAFT from one account's message (drafts().create, never a
+  // send) to procurement@ / szaszko@ only; the script refuses any other --to. Its run names a recipient, so without the
+  // pin the address rule refuses it. The draft then goes out the usual way: pinned gmail-kuldes.py, ledger, account.
+  [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-tovabbitas.py')),
+    'd2c3fd4dd18d03b3d295b0dda14f07bce1c367239f5e51044ccbef1cacc44268'],
 ])
 const PINNED_DRAFT_INTERP = /^(?:\S*\/)?python3?(?:\.\d+)?$/
 // Shell syntax that makes a pinned run something other than ONE plain command with literal words. Read with the quote
