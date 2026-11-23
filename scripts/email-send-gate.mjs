@@ -2023,7 +2023,7 @@ const PINNED_DRAFT_WRITERS = new Map([
   // send) to procurement@ / szaszko@ only; the script refuses any other --to. Its run names a recipient, so without the
   // pin the address rule refuses it. The draft then goes out the usual way: pinned gmail-kuldes.py, ledger, account.
   [normalize(join(dirname(fileURLToPath(import.meta.url)), 'gmail-tovabbitas.py')),
-    '5d231c83eeddcd117de0bb1a66a2f1d983634bafc551911703069f7fdaaa58be'],
+    'd2c3fd4dd18d03b3d295b0dda14f07bce1c367239f5e51044ccbef1cacc44268'],
 ])
 const PINNED_DRAFT_INTERP = /^(?:\S*\/)?python3?(?:\.\d+)?$/
 // Shell syntax that makes a pinned run something other than ONE plain command with literal words. Read with the quote
