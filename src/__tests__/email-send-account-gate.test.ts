@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
 import { gateDecision, senderAccount, callerAgent, sendAccountAllowed, buildSendAccountMsg, SEND_ACCOUNTS } from '../../scripts/email-send-gate.mjs'
 
 // LOCAL (owner decision 2026-11-12, Telegram 2555): the send right is per agent and per account.
-// ops-finance: szaszko + procurement; zara: info; every other sub-agent: draft only.
+// ops-finance: szaszko + procurement; zara: info; expert: info (2026-11-23, Telegram 2947); every other sub-agent: draft only.
 
 // A stand-in for the pinned scripts/gmail-kuldes.py: same pin mechanism (real path + sha256), own temp file.
 function fakePinnedSender() {
@@ -83,13 +83,16 @@ describe('callerAgent: identity from transcript_path, never from cwd', () => {
 })
 
 describe('sendAccountAllowed: the owner table', () => {
-  it('matches the 2026-11-12 decision exactly', () => {
-    expect(SEND_ACCOUNTS).toEqual({ 'ops-finance': ['procurement', 'szaszko'], zara: ['info'] })
+  it('matches the 2026-11-12 decision plus the 2026-11-23 expert grant exactly', () => {
+    expect(SEND_ACCOUNTS).toEqual({ 'ops-finance': ['procurement', 'szaszko'], zara: ['info'], expert: ['info'] })
     expect(sendAccountAllowed('ops-finance', 'szaszko')).toBe(true)
     expect(sendAccountAllowed('ops-finance', 'procurement')).toBe(true)
     expect(sendAccountAllowed('ops-finance', 'info')).toBe(false)
     expect(sendAccountAllowed('zara', 'info')).toBe(true)
     expect(sendAccountAllowed('zara', 'szaszko')).toBe(false)
+    expect(sendAccountAllowed('expert', 'info')).toBe(true)
+    expect(sendAccountAllowed('expert', 'szaszko')).toBe(false)
+    expect(sendAccountAllowed('expert', 'procurement')).toBe(false)
     for (const a of ['coder', 'iris', 'uj-ugynok', null, '', 'constructor', '__proto__']) {
       for (const f of ['info', 'procurement', 'szaszko']) expect(sendAccountAllowed(a, f), `${a}/${f}`).toBe(false)
     }
@@ -106,6 +109,7 @@ describe('gateDecision: the pinned sender at level 3 goes only from a held accou
     expect(decide(run('--fiok szaszko --id r1 --cimzett-ledger'), 'ops-finance').deny).toBe(false)
     expect(decide(run('--fiok procurement --id r1 --cimzett-ledger --proba'), 'ops-finance').deny).toBe(false)
     expect(decide(run('--fiok=info --id r1 --cimzett-ledger'), 'zara').deny).toBe(false)
+    expect(decide(run('--fiok info --id r1 --cimzett-ledger'), 'expert').deny).toBe(false)
   })
   it('refuses another account, another agent, an unknown caller and an unreadable --fiok', () => {
     const cases: Array<[string, string | null, string | null]> = [
@@ -116,6 +120,8 @@ describe('gateDecision: the pinned sender at level 3 goes only from a held accou
       [run('--fiok info --id r1 --cimzett-ledger'), null, 'info'],
       [run('--fio info --id r1 --cimzett-ledger'), 'zara', null],
       [run('--fiok info --fiok szaszko --id r1 --cimzett-ledger'), 'zara', null],
+      [run('--fiok szaszko --id r1 --cimzett-ledger'), 'expert', 'szaszko'],
+      [run('--fiok procurement --id r1 --cimzett-ledger'), 'expert', 'procurement'],
     ]
     for (const [cmd, caller, account] of cases) {
       const v = decide(cmd, caller)
@@ -164,6 +170,7 @@ describe('buildSendAccountMsg', () => {
     expect(m).toContain('fiok: info')
     expect(m).toContain('ops-finance: procurement, szaszko')
     expect(m).toContain('zara: info')
+    expect(m).toContain('expert: info')
     expect(m).toContain('DRAFT_ID')
     expect(m).toContain('Marveennek')
     expect(buildSendAccountMsg('Marveen', null, null)).toContain('nem azonosithato')
